@@ -102,6 +102,7 @@ class SamsungTVDevice(MediaPlayerEntity):
         self._end_of_power_off = None
         self._bridge = bridge
         self._bridge.register_reauth_callback(self.access_denied)
+        self._app_list = {}
 
     def access_denied(self):
         """Access denied callbck."""
@@ -124,7 +125,14 @@ class SamsungTVDevice(MediaPlayerEntity):
         if self._power_off_in_progress() and key != "KEY_POWEROFF":
             LOGGER.info("TV is powering off, not sending command: %s", key)
             return
-        self._bridge.send_key(key)
+        self._bridge.send_command(key)
+
+    def launch(self, app):
+        """Launch and app on the TV."""
+        if self._power_off_in_progress():
+            LOGGER.info("TV is powering off, not opening app: %s", app)
+            return
+        self._bridge.send_command(app, "app")
 
     def _power_off_in_progress(self):
         return (
@@ -165,7 +173,11 @@ class SamsungTVDevice(MediaPlayerEntity):
     @property
     def source_list(self):
         """List of available input sources."""
-        return list(SOURCES)
+        self._app_list = self._bridge.get_app_list()
+
+        src = list(SOURCES)
+        src.extend(list(self._app_list))
+        return src
 
     @property
     def supported_features(self):
@@ -249,8 +261,10 @@ class SamsungTVDevice(MediaPlayerEntity):
 
     def select_source(self, source):
         """Select input source."""
-        if source not in SOURCES:
-            LOGGER.error("Unsupported source")
+        if source in SOURCES:
+            self.send_key(SOURCES[source])
             return
-
-        self.send_key(SOURCES[source])
+        if source in self._app_list:
+            self.launch(self._app_list[source])
+            return
+        LOGGER.error("Unsupported source")

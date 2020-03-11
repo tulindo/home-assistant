@@ -49,6 +49,7 @@ class SamsungTVBridge(ABC):
         self.default_port = None
         self._remote = None
         self._callback = None
+        self._app_list = None
 
     def register_reauth_callback(self, func):
         """Register a callback function."""
@@ -57,6 +58,16 @@ class SamsungTVBridge(ABC):
     @abstractmethod
     def try_connect(self):
         """Try to connect to the TV."""
+
+    def get_app_list(self):
+        """Get app list."""
+        if self._app_list is None:
+            self._app_list = self._get_installed_apps()
+        return self._app_list
+
+    @abstractmethod
+    def _get_installed_apps(self):
+        """Get installed app list."""
 
     def is_on(self):
         """Tells if the TV is on."""
@@ -75,14 +86,17 @@ class SamsungTVBridge(ABC):
             # Different reasons, e.g. hostname not resolveable
             return False
 
-    def send_key(self, key):
-        """Send a key to the tv and handles exceptions."""
+    def send_command(self, payload, command_type="key"):
+        """Send a command to the tv and handles exceptions."""
         try:
             # recreate connection if connection was dead
             retry_count = 1
             for _ in range(retry_count + 1):
                 try:
-                    self._send_key(key)
+                    if command_type == "key":
+                        self._send_key(payload)
+                    else:
+                        self._run_app(payload)
                     break
                 except (
                     ConnectionClosed,
@@ -94,7 +108,10 @@ class SamsungTVBridge(ABC):
                     self._remote = None
         except (UnhandledResponse, AccessDenied):
             # We got a response so it's on.
-            LOGGER.debug("Failed sending command %s", key, exc_info=True)
+            if command_type == "key":
+                LOGGER.debug("Failed sending command %s", payload, exc_info=True)
+            else:
+                LOGGER.debug("Failed running app %s", payload, exc_info=True)
         except OSError:
             # Different reasons, e.g. hostname not resolveable
             pass
@@ -102,6 +119,10 @@ class SamsungTVBridge(ABC):
     @abstractmethod
     def _send_key(self, key):
         """Send the key."""
+
+    @abstractmethod
+    def _run_app(self, app):
+        """Run the app."""
 
     @abstractmethod
     def _get_remote(self):
@@ -180,9 +201,17 @@ class SamsungTVLegacyBridge(SamsungTVBridge):
                 raise
         return self._remote
 
+    def _get_installed_apps(self):
+        """Get installed app list."""
+        return None
+
     def _send_key(self, key):
         """Send the key using legacy protocol."""
         self._get_remote().control(key)
+
+    def _run_app(self, app):
+        """Launch an app on the legacy TV."""
+        pass
 
 
 class SamsungTVWSBridge(SamsungTVBridge):
@@ -234,12 +263,6 @@ class SamsungTVWSBridge(SamsungTVBridge):
 
         return RESULT_NOT_SUCCESSFUL
 
-    def _send_key(self, key):
-        """Send the key using websocket protocol."""
-        if key == "KEY_POWEROFF":
-            key = "KEY_POWER"
-        self._get_remote().send_key(key)
-
     def _get_remote(self):
         """Create or return a remote control instance."""
         if self._remote is None:
@@ -262,3 +285,27 @@ class SamsungTVWSBridge(SamsungTVBridge):
             except WebSocketException:
                 self._remote = None
         return self._remote
+
+    def _get_installed_apps(self):
+        """Get installed app list."""
+        app_list = self._get_remote().app_list()
+
+        # app_list is a list of dict
+        clean_app_list = {}
+        for app in app_list:
+            idx = app.get("appId")
+            if idx:
+                clean_app_list[app.get("name")] = idx
+
+        LOGGER.debug("Gen installed app_list %s", clean_app_list)
+        return clean_app_list
+
+    def _send_key(self, key):
+        """Send the key using websocket protocol."""
+        if key == "KEY_POWEROFF":
+            key = "KEY_POWER"
+        self._get_remote().send_key(key)
+
+    def _run_app(self, app):
+        """Launch an app on the websocket TV."""
+        self._get_remote().rest_app_run(app)
